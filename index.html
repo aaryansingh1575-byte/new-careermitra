@@ -2012,29 +2012,81 @@ RETURN ONLY JSON:
  ]
 }`;
 
-    let profiles=await aiJson(profilePrompt,{bypassCache:true});
-    const validProfiles=x=>!!(x&&Array.isArray(x.profiles)&&x.profiles.length>0&&
-      x.profiles.every(z=>z&&typeof z.name==='string'&&z.name.trim()&&z.profile&&typeof z.profile==='object'));
-
-    if(!validProfiles(profiles) && !/429|rate limit|rate_limit|quota/i.test(window.CM_AI_ERROR||'')){
-      profiles=await aiJson(profilePrompt+`\n\nRECOVERY PASS:\nReturn one complete profile for every supplied role, using concise but specific information. Do not omit roles. JSON only.`,{bypassCache:true});
-    }
+    /* IMPORTANT: Do not ask one AI response to write 6–8 huge profiles at once.
+       That can truncate the JSON and leave individual sections empty. Generate
+       compact batches and require every career section before accepting it. */
+    const profileComplete=p=>!!(
+      p && typeof p==='object' &&
+      String(p.summary||'').trim() &&
+      arr(p.pros).length>=3 && arr(p.cons).length>=3 &&
+      String(p.market||'').trim() && String(p.demand||'').trim() &&
+      String(p.pay||'').trim() && String(p.future||'').trim() &&
+      String(p.education||'').trim() && String(p.vocational||'').trim() &&
+      arr(p.courses).length>=2 && arr(p.path).length>=3 &&
+      arr(p.skills).length>=3 && arr(p.alternatives).length>=2 &&
+      String(p.caution||'').trim()
+    );
 
     const profileMap={};
-    if(validProfiles(profiles)){
-      profiles.profiles.forEach(z=>{profileMap[String(z.name).trim().toLowerCase()]=z.profile});
-    }
+    const batches=[];
+    for(let i=0;i<discoveredRoles.length;i+=3)batches.push(discoveredRoles.slice(i,i+3));
 
-    const merged=discoveredRoles.map(c=>{
-      const p=profileMap[c.name.trim().toLowerCase()]||{};
-      return {...c,profile:{
-        summary:String(p.summary||''),pros:arr(p.pros).slice(0,5).map(String),cons:arr(p.cons).slice(0,5).map(String),
-        market:String(p.market||''),demand:String(p.demand||''),pay:String(p.pay||''),future:String(p.future||''),
-        education:String(p.education||''),vocational:String(p.vocational||''),courses:arr(p.courses).slice(0,8).map(String),
-        path:arr(p.path).slice(0,8).map(String),skills:arr(p.skills).slice(0,10).map(String),
-        alternatives:arr(p.alternatives).slice(0,8).map(String),caution:String(p.caution||'')
-      }};
-    });
+    for(const batch of batches){
+      const batchPrompt=`You are CareerMitra's senior Indian career-profile analyst.
+Create a COMPLETE, career-specific profile for EVERY role in this batch.
+Do not change, merge, remove or rename any role.
+Answer EVERY field for EVERY role. Never leave a field blank.
+Do not copy generic text between different roles.
+Do not invent precise salary numbers, job counts or guaranteed outcomes. If exact current figures are uncertain, describe the earning pattern honestly and say that live verification is required.
+Education must be the actual Indian route for that occupation when known.
+Courses must be useful role-specific subjects, preparation, certifications or training — not random certificates.
+If a vocational route genuinely does not exist, explicitly say so.
+
+STUDENT EVIDENCE:
+${studentEvidence}
+
+ROLES TO PROFILE:
+${JSON.stringify(batch)}
+
+RETURN ONLY THIS JSON:
+{
+ "profiles":[
+  {
+   "name":"EXACT role name from the supplied batch",
+   "profile":{
+    "summary":"what this exact professional does and typical work setting",
+    "pros":["3-5 role-specific advantages"],
+    "cons":["3-5 role-specific drawbacks"],
+    "market":"specific India market context for this occupation",
+    "demand":"specific current demand/hiring context in India, with uncertainty where needed",
+    "pay":"realistic earning pattern in India; avoid fabricated exact figures",
+    "future":"specific growth, technology changes, opportunities and risks",
+    "education":"exact academic route in India",
+    "vocational":"exact diploma/vocational route, or clearly state that no direct vocational route exists",
+    "courses":["2-6 useful role-specific subjects/courses/certifications/preparation"],
+    "path":["Step 1...","Step 2...","Step 3...","Step 4..."],
+    "skills":["3-8 job-ready skills"],
+    "alternatives":["2-4 genuinely related alternatives"],
+    "caution":"specific requirement, uncertainty or fact that must be verified before choosing this role"
+   }
+  }
+ ]
+}`;
+
+      let batchResult=await aiJson(batchPrompt,{bypassCache:true});
+      const validBatch=x=>!!(x&&Array.isArray(x.profiles)&&x.profiles.length===batch.length&&
+        x.profiles.every(z=>z&&typeof z.name==='string'&&z.name.trim()&&profileComplete(z.profile)));
+
+      if(!validBatch(batchResult) && !/429|rate limit|rate_limit|quota/i.test(window.CM_AI_ERROR||'')){
+        batchResult=await aiJson(batchPrompt+`\n\nRECOVERY PASS: Return a COMPLETE profile for every role in this batch. Every field is mandatory. Keep the answer concise enough to fit in JSON. JSON only.`,{bypassCache:true});
+      }
+
+      if(validBatch(batchResult)){
+        batchResult.profiles.forEach(z=>{
+          profileMap[String(z.name).trim().toLowerCase()]=z.profile;
+        });
+      }
+    }
 
     /* Keep the roles even if one profile call is temporarily incomplete; never
        replace them with static careers. Missing profile fields are rendered as
