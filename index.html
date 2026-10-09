@@ -130,10 +130,13 @@ details.j>summary::-webkit-details-marker{display:none}
 @media(max-width:620px){.intro-page{padding:18px 12px}.intro-shell{padding:25px 18px;border-radius:23px}.intro-top{margin-bottom:27px}.intro-badge{display:none}.intro-title{font-size:42px;letter-spacing:-2px}.intro-copy{font-size:14px}.intro-steps{grid-template-columns:1fr}.intro-bottom .intro-cta{width:100%}}
 
 
-  .cm-ai-status{display:inline-flex;align-items:center;justify-content:center;width:12px;height:12px;margin:10px 0 0;padding:0;border:0;background:transparent}
-  .cm-ai-status.fallback{background:transparent}
-  .cm-ai-dot{width:8px;height:8px;border-radius:50%;background:#22c55e;box-shadow:0 0 9px rgba(34,197,94,.75);display:block}
-  .cm-ai-status.fallback .cm-ai-dot{background:#f59e0b;box-shadow:0 0 9px rgba(245,158,11,.8)}
+  .cm-ai-status{display:inline-flex;align-items:center;gap:8px;margin:10px 0 0;padding:0;border:0;background:transparent;font-size:12px;font-weight:700}
+  .cm-ai-dot{width:8px;height:8px;border-radius:50%;display:block;flex:0 0 8px;transition:.2s ease}
+  .cm-ai-status.green .cm-ai-dot{background:#22c55e;box-shadow:0 0 9px rgba(34,197,94,.75)}
+  .cm-ai-status.blue .cm-ai-dot{background:#3b82f6;box-shadow:0 0 9px rgba(59,130,246,.8)}
+  .cm-ai-status.orange .cm-ai-dot{background:#f59e0b;box-shadow:0 0 9px rgba(245,158,11,.8)}
+  .cm-ai-status.pink .cm-ai-dot{background:#ec4899;box-shadow:0 0 9px rgba(236,72,153,.8)}
+  .cm-ai-status.green{color:#16a34a}.cm-ai-status.blue{color:#2563eb}.cm-ai-status.orange{color:#d97706}.cm-ai-status.pink{color:#db2777}
 </style>
 </head>
 <body>
@@ -232,7 +235,15 @@ async function aiJson(prompt,opts={}){
       const r=await fetch('/api/ai',{
         method:'POST',
         headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({prompt,webSearch,career:opts.career||'',purpose:isTest?'student test generation':''})
+        body:JSON.stringify({
+          prompt,
+          webSearch,
+          career:opts.career||'',
+          purpose:isTest?'student test generation':'',
+          testZone:isTest,
+          vault:opts.vault||null,
+          stage:opts.stage||''
+        })
       });
       const data=await r.json().catch(()=>null);
       if(!r.ok){
@@ -244,6 +255,7 @@ async function aiJson(prompt,opts={}){
       }
       const out=(data&&data.ok&&data.data&&typeof data.data==='object')?data.data:(data&&typeof data==='object'&&!data.error?data:null);
       if(out){
+        if(data&&data.serverValidated) out._serverValidated=true;
         const usedFallback=Boolean(data&&data.fallbackUsed);
         AI_READY=!usedFallback;
         window.CM_AI_ERROR=usedFallback?(data.warning||'AI synthesis was temporarily unavailable; source-backed fallback was used.'):'';
@@ -771,38 +783,60 @@ async function makeQuestions(s){
   const stage=STAGES[s.stage]?STAGES[s.stage].t+' — '+STAGES[s.stage].d:'student';
   S.tload=0;window.CM_TEST_AI_SOURCES={};
   const prompt=buildTestPrompt(vault,stage);
-  let result=await aiJson(prompt);
+  let result=await aiJson(prompt,{
+    purpose:'student test generation',
+    testZone:true,
+    bypassCache:true,
+    vault,
+    stage
+  });
   let all=validQuestions(result,TQ_N)||[];
-  let issues=all.length===TQ_N?questionQualityIssues(all,v):['AI response was incomplete or structurally invalid.'];
+  // The backend Test Zone route performs the authoritative structural and
+  // Personal-Vault validation. Do not reject a valid server-validated test
+  // again with the older, stricter client heuristics.
+  const serverValidated=Boolean(result&&result._serverValidated);
+  let issues=all.length===TQ_N
+    ? (serverValidated ? [] : questionQualityIssues(all,v))
+    : ['AI response was incomplete or structurally invalid.'];
 
-  // AI remains the primary generator. A second AI pass is used only when the first
-  // response fails the structural/neutrality/Vault-grounding gate.
-  if((all.length!==TQ_N||issues.length) && !/429|rate limit|rate_limit|quota/i.test(window.CM_AI_ERROR||'')){
-    const repairPrompt=prompt+`
-
-QUALITY AUDIT FAILED
-The previous response did not pass these checks:
-${issues.slice(0,40).join('\n')}
-Generate the COMPLETE test again. Keep every question neutral, natural and grounded in the student's actual Vault. Do not defend the previous draft. Return ONLY JSON.`;
-    result=await aiJson(repairPrompt,{bypassCache:true,purpose:'student test generation'});
-    all=validQuestions(result,TQ_N)||[];
-    issues=all.length===TQ_N?questionQualityIssues(all,v):['AI repair was incomplete or invalid.'];
-  }
+  // IMPORTANT: do not make a second long AI request here.
+  // The backend already performs the Test Zone generation and validation.
+  // If the endpoint fails or returns an invalid payload, use the emergency
+  // local fallback immediately instead of creating another 30–50 second request.
 
   if(all.length===TQ_N && !issues.length){
-    const q=all.map(x=>({...x,cat:String(x.cat).trim()}));
+    const q=all.map(x=>({...x,cat:String(x.cat).trim(),source:'ai'}));
     const sources={};TQ_PLAN.forEach(([cat])=>sources[cat]='ai');
     window.CM_TEST_AI_SOURCES=sources;
     S.tload=TQ_PLAN.length;if(S.tstate==='loading')render(true);
     return{q,src:'ai',sources};
   }
 
-  // Last-resort safety net only. It is NEVER marked as AI-generated.
-  // Normal operation should reach the AI branch above; this exists solely for a hard provider failure.
+  // Last-resort safety net only. Keep any valid AI category and use the local
+  // generator only for categories that could not be recovered. This allows the
+  // Test Zone indicator to honestly show green/blue/orange/pink instead of
+  // turning the entire 25-question test into fallback after one bad category.
   const out={};const sources={};
-  for(const [cat,n] of TQ_PLAN){out[cat]=localCat(v,cat,n);sources[cat]='builtin';}
+  const aiByCat={};
+  if(Array.isArray(all)&&all.length){
+    for(const q of all){
+      const cat=String(q.cat||'').trim();
+      if(TQ_PLAN.some(([c])=>c===cat)){
+        (aiByCat[cat]||(aiByCat[cat]=[])).push({...q,cat});
+      }
+    }
+  }
+  for(const [cat,n] of TQ_PLAN){
+    if((aiByCat[cat]||[]).length===n){
+      out[cat]=aiByCat[cat];
+      sources[cat]='ai';
+    }else{
+      out[cat]=localCat(v,cat,n);
+      sources[cat]='builtin';
+    }
+  }
   window.CM_TEST_AI_SOURCES=sources;
-  const q=TQ_PLAN.flatMap(([cat])=>out[cat]||[]);
+  const q=TQ_PLAN.flatMap(([cat])=>(out[cat]||[]).map(x=>({...x,source:sources[cat]==='ai'?'ai':'builtin'})));
   if(q.length!==TQ_N){window.CM_AI_ERROR='The AI could not produce a valid complete test, and the recovery test was incomplete.';return null;}
   S.tload=TQ_PLAN.length;if(S.tstate==='loading')render(true);
   return{q,src:'fallback',sources};
@@ -811,20 +845,12 @@ Generate the COMPLETE test again. Keep every question neutral, natural and groun
 /* ================= analysis ================= */
 function aiCareerRecord(cand,i,st){
   const name=String(cand&&cand.name||cand&&cand.career||'').trim();
-  const base=careerRecord(name);
+  const profile=(cand&&cand.profile&&typeof cand.profile==='object')?cand.profile:{};
   const fit=String(cand&&cand.fit||'Possible');
   const role={
-    ...(base||{}),
     n:name||'Career direction',
-    c:base&&base.c?base.c:'',
-    kw:base&&base.kw?base.kw:[],
-    pros:base&&base.pros?base.pros:[],
-    cons:base&&base.cons?base.cons:[],
-    alt:base&&base.alt?base.alt:[],
-    mkt:base&&base.mkt?base.mkt:'Structured market information is not available for this exact role yet. Use Live Career Research before making a decision.',
     rank:i,
     score:typeof cand?.score==='number'?cand.score:(fit.toLowerCase()==='strong'?0.9:fit.toLowerCase()==='moderate'?0.7:0.5),
-    ph:0,oh:0,
     vaultMatch:!!(st.vault&&[st.vault.nonnegotiable,...roleNames(st.vault),st.vault.field].filter(Boolean).some(x=>String(x).trim().toLowerCase()===name.toLowerCase())),
     strong:arr(cand&&cand.evidence).map(String),
     watch:arr(cand&&cand.watchouts).map(String),
@@ -832,12 +858,42 @@ function aiCareerRecord(cand,i,st){
     aiFit:fit,
     aiTradeoffs:arr(cand&&cand.tradeoffs).map(String),
     aiPath:arr(cand&&cand.path).map(String),
-    aiAlternatives:arr(cand&&cand.alternatives).map(String)
+    aiAlternatives:arr(cand&&cand.alternatives).map(String),
+    // EVERYTHING below is supplied by the AI career-profile analysis.
+    pros:arr(profile.pros).map(String),
+    cons:arr(profile.cons).map(String),
+    mkt:String(profile.market||''),
+    demand:String(profile.demand||''),
+    future:String(profile.future||''),
+    pay:String(profile.pay||''),
+    education:String(profile.education||''),
+    vocational:String(profile.vocational||''),
+    courses:arr(profile.courses).map(String),
+    path:arr(profile.path).map(String),
+    skills:arr(profile.skills).map(String),
+    alt:arr(profile.alternatives).map(String),
+    profileSummary:String(profile.summary||''),
+    profileCaution:String(profile.caution||'')
   };
-  if(!role.pros.length&&role.aiTradeoffs.length)role.cons=role.aiTradeoffs;
-  if(!role.alt.length&&role.aiAlternatives.length)role.alt=role.aiAlternatives;
+  if(!role.pros.length)role.pros=['AI profile did not provide enough evidence for a reliable pro/con claim.'];
+  if(!role.cons.length)role.cons=['AI profile did not provide enough evidence for a reliable pro/con claim.'];
+  if(!role.mkt)role.mkt='Market information was not confidently established by the AI analysis.';
+  if(!role.demand)role.demand='Demand could not be established confidently from the student evidence alone.';
+  if(!role.future)role.future='Future outlook was not established confidently by the AI analysis.';
+  if(!role.education)role.education='Education pathway needs career-specific verification before the student makes a decision.';
+  if(!role.vocational)role.vocational='No reliable vocational route was established by the AI analysis.';
+  if(!role.courses.length)role.courses=['Choose only courses that directly support the verified pathway for this role.'];
+  if(!role.path.length)role.path=['Verify the required qualification or training, build the core skills, gain practical experience, and then apply through the appropriate entry route.'];
+  if(!role.skills.length)role.skills=['Build the core technical and professional skills required by the verified role.'];
+  if(!role.alt.length)role.alt=role.aiAlternatives;
   return role;
 }
+function careerAnalysisReady(st){
+  const ai=st&&st.test&&st.test.ai;
+  const roles=Array.isArray(ai&&ai.rankedCareers)?ai.rankedCareers:[];
+  return String(st&&st.test&&st.test.aiSource||'').toLowerCase()==='ai' && roles.length>0;
+}
+
 function analyse(st){
   const tally=st.test&&st.test.tally?st.test.tally:{R:0,I:0,A:0,S:0,E:0,C:0};
   const total=LET.reduce((a,k)=>a+(tally[k]||0),0)||1;
@@ -852,14 +908,11 @@ function analyse(st){
   let roles=[];
   if(aiList.length){
     roles=aiList.map((x,i)=>aiCareerRecord(x,i,st));
-  }else{
-    // Last-resort deterministic interpretation only when the AI analysis was genuinely unavailable.
-    const pref=(roleNames(v).join(' ')+' '+(v.nonnegotiable||'')+' '+(v.field||'')).toLowerCase();
-    const other=[...arr(v.interests),...arr(v.hobbies),...arr(v.likings),...subjNames(v),...skillNames(v)].join(' ').toLowerCase();
-    const scored=CAREERS.map(c=>{let score=0;c.c.split('').forEach((k,i)=>score+=share[k]*[3,2,1][i]);const ph=c.kw.filter(k=>rx(k).test(pref)).length,oh=c.kw.filter(k=>rx(k).test(other)).length;return{c,score:score+Math.min(3,ph*2+oh)*.25,ph,oh}}).sort((a,b)=>b.score-a.score);
-    roles=scored.slice(0,7).map((p,i)=>{const strong=[],watch=[];p.c.c.split('').forEach(k=>{if(share[k]>=.22)strong.push(`Your answers show some preference for ${TR[k].n.toLowerCase()} activities.`);else if(share[k]<=.1)watch.push(`You showed less preference for ${TR[k].n.toLowerCase()} activities.`)});if(p.ph>0)strong.push('This role was explicitly present in your Personal Vault.');return{...p.c,rank:i,strong,watch,ph:p.ph,oh:p.oh,vaultMatch:p.ph>0,aiFit:'Fallback'}});
   }
-  const unmatched=roleNames(v).filter(r=>!roles.some(c=>c.n.toLowerCase()===r.toLowerCase())&&!CAREERS.some(c=>c.kw.some(k=>rx(k).test(r.toLowerCase()))||c.n.toLowerCase().includes(r.toLowerCase())));
+  // No deterministic career guessing here. If the AI analysis fails, we do NOT
+  // manufacture job matches from the old static career database. This is deliberate:
+  // the Scorecard must never present a false student-specific analysis as AI truth.
+  const unmatched=[];
   const [a,b]=order;
   const type=`${TR[a].who}–${TR[b].who} (${a}${b})`;
   const defaultTraits=[...TR[a].t,...TR[b].t.slice(0,3),...TR[order[2]].t.slice(0,1)];
@@ -872,7 +925,7 @@ function analyse(st){
     overall:ai.summary||`Your responses show a ${TR[a].who.toLowerCase()}-led pattern with ${TR[b].who.toLowerCase()} strengths.`,
     inclined:aiDirections.length?aiDirections:arr(ai.inclined).length?arr(ai.inclined):[TR[a].cat,TR[b].cat],
     interests:aiCore.length?aiCore:[...new Set([v.field,...arr(v.interests),...arr(v.hobbies),...arr(v.likings)].filter(Boolean))].slice(0,10),
-    source:aiList.length?'ai':'fallback'};
+    source:(aiList.length&&String(st.test&&st.test.aiSource||'').toLowerCase()==='ai')?'ai':'unavailable'};
 }
 
 /* ================= family helpers ================= */
@@ -1167,10 +1220,49 @@ function snapshot(v){
 }
 function testAIStatus(){
   const src=window.CM_TEST_AI_SOURCES||{};
-  const fallback=Object.values(src).some(x=>x==='builtin');
-  const cls=fallback?'cm-ai-status fallback':'cm-ai-status';
-  const detail=fallback?'At least one Test Zone section used the built-in generator.':'All Test Zone sections were generated by AI.';
-  return `<span class="${cls}" title="${esc(detail)}" aria-label="${esc(detail)}"><span class="cm-ai-dot"></span></span>`;
+  let aiCount=0,fallbackCount=0;
+
+  // Prefer question-level source data when available.
+  const tq=S.tq&&Array.isArray(S.tq.q)?S.tq.q:[];
+  if(tq.length){
+    tq.forEach(q=>{
+      const source=String(q&&q.source||q&&q.aiSource||'').toLowerCase();
+      if(source==='ai'||source==='generated'||source==='openrouter')aiCount++;
+      else if(source==='builtin'||source==='fallback'||source==='local')fallbackCount++;
+    });
+  }
+
+  // Current generator stores category-level sources. Use them when question-level
+  // source metadata is unavailable.
+  if(!aiCount&&!fallbackCount){
+    Object.values(src).forEach(x=>{
+      if(x==='ai')aiCount++;
+      else if(x==='builtin'||x==='fallback')fallbackCount++;
+    });
+    // Each category represents its planned number of questions.
+    if(Object.keys(src).length){
+      aiCount=0;fallbackCount=0;
+      TQ_PLAN.forEach(([cat,n])=>{
+        if(src[cat]==='ai')aiCount+=n;
+        else if(src[cat]==='builtin'||src[cat]==='fallback')fallbackCount+=n;
+      });
+    }
+  }
+
+  const total=aiCount+fallbackCount;
+  let color='orange',label='AI status unavailable';
+  if(total){
+    const ratio=aiCount/total;
+    if(aiCount===total){color='green';label='100% AI Generated';}
+    else if(ratio>=0.70){color='blue';label='Mostly AI Generated';}
+    else if(ratio>=0.40){color='orange';label='AI + Fallback';}
+    else{color='pink';label='Mostly Fallback';}
+  }
+
+  const aiPct=total?Math.round(aiCount/total*100):0;
+  const fbPct=total?Math.round(fallbackCount/total*100):0;
+  const detail=total?`${label} · ${aiPct}% AI · ${fbPct}% fallback`:'AI status unavailable';
+  return `<span class="cm-ai-status ${color}" title="${esc(detail)}" aria-label="${esc(detail)}"><span class="cm-ai-dot"></span><span>${esc(label)}</span></span>`;
 }
 
 function sTest(){
@@ -1206,21 +1298,17 @@ function careerRecord(name){
   return CAREERS.find(c=>c.n.toLowerCase()===q)||CAREERS.find(c=>c.kw.some(k=>q.includes(k)||k.includes(q)))||null;
 }
 function learningPath(r){
-  const n=(r&&r.n||'').toLowerCase();
-  if(/software/.test(n))return{academic:'B.Tech/B.E. CSE/IT or BCA → MCA',vocational:'Diploma in Computer Engineering / IT',cert:['Cloud fundamentals','Git/GitHub','Web or backend certification'],skills:['DSA','C++/Python/Java','SQL','Git','APIs','System design basics']};
-  if(/data scientist|ml/.test(n))return{academic:'B.Tech/B.E. CSE/IT/AI/Data Science or B.Sc Statistics/Math → PG where useful',vocational:'Diploma in Data Analytics / AI-ML',cert:['Python for Data Science','SQL','Machine Learning','Cloud ML basics'],skills:['Python','NumPy/Pandas','Statistics','ML','SQL','Model deployment']};
-  if(/cybersecurity/.test(n))return{academic:'B.Tech/B.E. CSE/IT/Cybersecurity or BCA → MCA/M.Tech where useful',vocational:'Diploma in Cybersecurity / Networking',cert:['Networking fundamentals','Security fundamentals','Ethical hacking'],skills:['Linux','Networking','Python','Web security','SIEM basics','Incident response']};
-  if(/defence|space/.test(n))return{academic:'B.Tech/B.E. Aerospace/Mechanical/ECE/CSE/Physics/Maths as relevant → M.Tech/M.Sc for research roles',vocational:'Diploma/Polytechnic in relevant engineering stream',cert:['GATE/recruitment exam preparation','CAD or simulation tools'],skills:['Mathematics','Physics','Programming where relevant','Simulation','Technical writing']};
-  if(/embedded|robotics/.test(n))return{academic:'B.Tech/B.E. ECE/EEE/Mechatronics/Robotics/CSE',vocational:'Diploma in Electronics / Embedded Systems / Mechatronics',cert:['Embedded C','Arduino/STM32','IoT fundamentals'],skills:['C/C++','Microcontrollers','Electronics','Sensors','RTOS basics','Debugging']};
-  if(/product manager/.test(n))return{academic:'Any strong UG degree + product/business exposure; MBA optional depending on path',vocational:'Product / business operations diploma or apprenticeship',cert:['Product management fundamentals','Analytics','Agile/Scrum'],skills:['Product thinking','SQL/analytics','Communication','Roadmapping','User research']};
-  if(/ux|ui/.test(n))return{academic:'B.Des/BFA/HCI/Design or any degree with strong portfolio',vocational:'Diploma in UI/UX / Graphic Design',cert:['Figma','UX research','Design systems'],skills:['Figma','Wireframing','Prototyping','User research','Visual design','Portfolio building']};
-  if(/teacher|professor/.test(n))return{academic:'Relevant bachelor’s → B.Ed for school teaching; Master’s + NET/PhD route for higher education',vocational:'Teacher training / education diploma where applicable',cert:['Teaching methodology','Digital classroom tools'],skills:['Subject mastery','Communication','Lesson planning','Assessment']};
-  if(/doctor|healthcare/.test(n))return{academic:'Relevant healthcare degree; for doctor route MBBS → specialisation as applicable',vocational:'Recognised allied-health diploma/paramedical route where applicable',cert:['First aid/BLS and field-specific certifications'],skills:['Subject knowledge','Clinical skills as applicable','Communication','Documentation']};
-  if(/civil services/.test(n))return{academic:'Any recognised bachelor’s degree; subject-specific higher study optional',vocational:'Public administration / government exam skill programmes',cert:['UPSC/state PSC preparation','Writing/interview preparation'],skills:['General studies','Reasoning','Writing','Current affairs','Communication']};
-  if(/chartered accountant|finance/.test(n))return{academic:'B.Com/BBA/Finance or related degree + CA/finance pathway',vocational:'Accounting/taxation diploma',cert:['Excel','Financial modelling','Tally/ERP'],skills:['Accounting','Excel','Financial analysis','Tax basics','Communication']};
-  if(/lawyer/.test(n))return{academic:'LL.B/5-year integrated law degree; specialisation as desired',vocational:'Legal assistant/paralegal diploma',cert:['Legal research','Contract drafting'],skills:['Legal research','Writing','Argumentation','Communication','Case analysis']};
-  if(/marketing|business manager/.test(n))return{academic:'BBA/B.Com/any relevant UG; MBA optional',vocational:'Sales/marketing diploma',cert:['Digital marketing','Analytics','CRM'],skills:['Communication','Sales','Marketing analytics','Negotiation','Presentation']};
-  return{academic:'Relevant bachelor’s degree; higher study if the role requires it',vocational:'Relevant diploma / polytechnic / ITI route where applicable',cert:['Role-specific fundamentals certification'],skills:['Core subject knowledge','Communication','Problem solving','Portfolio/project work']};
+  const ai=r||{};
+  return {
+    academic:ai.education||'Education pathway not confidently established by AI.',
+    vocational:ai.vocational||'No reliable vocational route established by AI.',
+    cert:arr(ai.courses).length?arr(ai.courses):['No specific course/certification recommendation established by AI.'],
+    skills:arr(ai.skills).length?arr(ai.skills):['Core role skills need to be verified before selection.'],
+    path:arr(ai.path),
+    market:ai.mkt||'Market information not confidently established by AI.',
+    demand:ai.demand||'Demand not confidently established by AI.',
+    future:ai.future||'Future outlook not confidently established by AI.'
+  };
 }
 function anchorCareerBlock(st,an){
   const name=st.vault&&st.vault.nonnegotiable;if(!name)return '';
@@ -1333,31 +1421,38 @@ function scoreBlock(st){
   const interests=arr(a.coreInterests).length?a.coreInterests:an.interests;
   const traits=arr(a.traits).length?a.traits:an.traits;
   const paths=an.roles.map(r=>({r,p:learningPath(r)}));
-  return{an,html:`<div class="card"><div class="muted small">Personality type</div><div class="big">${esc(an.type)}</div><p>${esc(a.summary||an.overall)}</p>
+  const roleStatus=careerAnalysisReady(st)?`<div class="note ok"><b>AI career analysis verified.</b> The roles below are based on this student's Personal Vault and actual Test Zone responses.</div>`:`<div class="note warn"><b>No verified AI career-role analysis is available.</b> CareerMitra will not invent job roles from generic personality scores. Retake the Test Zone when the AI analysis is available.</div>`;
+  return{an,html:`<div class="card"><div class="muted small">Personality type</div><div class="big">${esc(an.type)}</div><p>${esc(a.summary||an.overall)}</p>${roleStatus}
    <h3>Career types you’re inclined to</h3><ul style="margin:0;padding-left:18px">${an.inclined.map(x=>`<li>${esc(x)}</li>`).join('')}</ul>
    ${a.careerInclination?`<p class="muted" style="margin-top:8px">${esc(a.careerInclination)}</p>`:''}
    <h3>Core interests</h3>${interests.map(x=>`<span class="chip">${esc(x)}</span>`).join('')}
    <h3>Your traits</h3>${traits.map(x=>`<span class="chip">${esc(x)}</span>`).join('')}</div>
    <div class="card"><h3 style="margin-top:0">Personality profile spread</h3>${LET.map(k=>`<div class="trait"><span>${TR[k].who} · ${TR[k].n}</span><div class="bar"><i style="width:${Math.round(an.share[k]*100)}%"></i></div><span>${Math.round(an.share[k]*100)}%</span></div>`).join('')}<p class="muted small">Shows how your answers spread across six interest styles. It is a profile, not a score.</p></div>
-   <div class="card"><h2>Education & learning pathways</h2><p class="muted">For each analysed role, this section now keeps the complete career picture together: fit, pros, cons, market/demand/pay, academic route, vocational alternatives, certifications, job-ready skills and alternatives.</p>${paths.map(({r,p})=>`<details class="role" ${r.rank===0?'open':''}><summary><span>${esc(r.n)}</span><span class="fit ${r.rank<2?'s':r.rank<4?'g':'p'}">${r.rank<2?'Strong fit':r.rank<4?'Good fit':'Possible fit'}</span></summary><div class="in">
+   <div class="card"><h2>Education & learning pathways</h2><p class="muted">For each AI-analysed role, this section gives a career-specific job profile: why it fits you, pros, cons, market, demand, pay, future, education, courses, step-by-step path, skills and alternatives.</p>${an.roles.length?"":`<div class="note warn"><b>No verified job roles to display.</b><br>The AI career analysis did not return a complete student-specific role list, so no generic career mapping is being shown.</div>`}${paths.map(({r,p})=>`<details class="role" ${r.rank===0?'open':''}><summary><span>${esc(r.n)}</span><span class="fit ${r.rank<2?'s':r.rank<4?'g':'p'}">${r.rank<2?'Strong fit':r.rank<4?'Good fit':'Possible fit'}</span></summary><div class="in">
     ${r.strong.length||r.watch.length?`<div class="note info"><b>Why this role appears in your analysis</b><ul style="margin:4px 0 0;padding-left:18px">${r.strong.map(x=>`<li>${esc(x)}</li>`).join('')}${r.watch.map(x=>`<li>⚠ ${esc(x)}</li>`).join('')}</ul></div>`:''}
     <div class="pc"><div class="pros"><h4>Pros</h4><ul>${r.pros.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></div><div class="cons"><h4>Cons / trade-offs</h4><ul>${r.cons.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></div></div>
-    <h3>Market, demand & pay</h3><p>${esc(r.mkt)}</p><p class="muted small" style="margin-top:-6px">Indicative information in India; actual pay and opportunities vary by employer, city, skills and experience.</p>
-    <h3>Education & pathway to enter this role</h3><p><b>🎓 Academic:</b> ${esc(p.academic)}</p><p><b>🛠️ Vocational / Diploma:</b> ${esc(p.vocational)}</p><p><b>📜 Useful certifications:</b> ${p.cert.map(esc).join(', ')}</p><p><b>💻 Job-ready skills:</b> ${p.skills.map(esc).join(', ')}</p>
+    ${r.profileSummary?`<h3>AI job profile</h3><p>${esc(r.profileSummary)}</p>`:''}
+    <h3>Market & demand</h3><p>${esc(r.mkt)}</p><p>${esc(r.demand)}</p>${r.pay?`<p><b>Pay:</b> ${esc(r.pay)}</p>`:''}<p class="muted small">Dynamic market, demand and pay claims should be live-verified before a final career decision.</p>
+    <h3>Future</h3><p>${esc(r.future)}</p>
+    <h3>Education & learning pathway</h3><p><b>🎓 Academic:</b> ${esc(r.education)}</p><p><b>🛠️ Vocational / Diploma:</b> ${esc(r.vocational)}</p><p><b>📚 Courses / certifications:</b> ${r.courses.map(esc).join(', ')}</p><p><b>🛣️ Step-by-step path:</b></p><ol style="margin-top:4px">${r.path.map(x=>`<li>${esc(x)}</li>`).join('')}</ol><p><b>💻 Job-ready skills:</b> ${r.skills.map(esc).join(', ')}</p>
+    ${r.profileCaution?`<div class="note warn"><b>Verification:</b> ${esc(r.profileCaution)}</div>`:''}
     <h3>Alternatives</h3>${r.alt.map(x=>`<span class="chip alt">${esc(x)}</span>`).join('')}
    </div></details>`).join('')}</div>`};
 }
 function rolesBlock(an,withPersonal){
+  if(!an.roles.length)return `<div class="card"><div class="note warn"><b>No verified AI job roles are available yet.</b><br>CareerMitra will not manufacture a career recommendation from generic Holland scores. Complete/rerun the Test Zone when AI analysis is available.</div></div>`;
   const lab=r=>r.rank<2?['s','Strong fit']:r.rank<4?['g','Good fit']:['p','Possible fit'];
   return an.roles.map((r,i)=>{const[l,t]=lab(r);return`<details class="role" ${i===0?'open':''}><summary><span>${esc(r.n)}${r.vaultMatch?' <span class="chip">your choice</span>':''}</span><span class="fit ${l}">${t}</span></summary><div class="in">
    ${withPersonal&&(r.strong.length||r.watch.length)?`<div class="note info"><b>From your Test Zone activity</b><ul style="margin:4px 0 0;padding-left:18px">${r.strong.map(x=>`<li>${esc(x)}</li>`).join('')}${r.watch.map(x=>`<li>⚠ ${esc(x)}</li>`).join('')}</ul></div>`:''}
    <div class="pc"><div class="pros"><h4>Pros</h4><ul>${r.pros.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></div><div class="cons"><h4>Cons</h4><ul>${r.cons.map(x=>`<li>${esc(x)}</li>`).join('')}</ul></div></div>
-   <h3>Market value</h3><p>${esc(r.mkt)}</p><p class="muted small" style="margin-top:-6px">Indicative ranges in India; they vary by employer, city and skills.</p>
-   <h3>Education & pathway to enter this role</h3><p><b>🎓 Academic:</b> ${esc(learningPath(r).academic)}</p><p><b>🛠️ Vocational / Diploma:</b> ${esc(learningPath(r).vocational)}</p><p><b>📜 Useful certifications:</b> ${learningPath(r).cert.map(esc).join(', ')}</p><p><b>💻 Job-ready skills:</b> ${learningPath(r).skills.map(esc).join(', ')}</p>
+   ${r.profileSummary?`<h3>AI job profile</h3><p>${esc(r.profileSummary)}</p>`:''}
+   <h3>Market & demand</h3><p>${esc(r.mkt)}</p><p>${esc(r.demand)}</p>${r.pay?`<p><b>Pay:</b> ${esc(r.pay)}</p>`:''}<p class="muted small">Dynamic market, demand and pay claims should be live-verified before a final career decision.</p>
+   <h3>Future</h3><p>${esc(r.future)}</p>
+   <h3>Education & learning pathway</h3><p><b>🎓 Academic:</b> ${esc(r.education)}</p><p><b>🛠️ Vocational / Diploma:</b> ${esc(r.vocational)}</p><p><b>📚 Courses / certifications:</b> ${r.courses.map(esc).join(', ')}</p><p><b>🛣️ Step-by-step path:</b></p><ol style="margin-top:4px">${r.path.map(x=>`<li>${esc(x)}</li>`).join('')}</ol><p><b>💻 Job-ready skills:</b> ${r.skills.map(esc).join(', ')}</p>${r.profileCaution?`<div class="note warn"><b>Verification:</b> ${esc(r.profileCaution)}</div>`:''}
    <h3>Alternatives</h3>${r.alt.map(x=>`<span class="chip alt">${esc(x)}</span>`).join('')}</div></details>`}).join('')
    +(an.unmatched.length?`<p class="muted small">Not in our role database yet: ${an.unmatched.map(esc).join(', ')}.</p>`:'');
 }
-const staleNote=s=>s.test&&s.vault&&s.test.rev!==s.vault.rev?'<div class="note warn">Your vault changed after this test. Retake the Test Zone to refresh these results.</div>':'';
+const staleNote=s=>s.test&&s.vault&&s.test.rev!==s.vault.rev?'<div class="note warn"><b>Test result is stale.</b> Your Personal Vault changed after this test. Retake the Test Zone before using these career roles.</div>':'';
 function sScore(){
   const s=stu();
   return staleNote(s)+scoreBlock(s).html+nextBar('Next: Options Analyser','See pros, cons and market value for each suggested role.','markdone','Continue to Options Analyser →','data-p="score"');
@@ -1365,7 +1460,7 @@ function sScore(){
 function sOptions(){
   const s=stu(),{an}=scoreBlock(s);
   const fin=s.progress.options;
-  return`<div class="card"><h2>Options Analyser</h2><p class="muted">Roles ranked from your Test Zone activity and Personal Vault, with pros, cons and what your own answers suggest.</p></div>`+rolesBlock(an,true)+
+  return`<div class="card"><h2>Options Analyser</h2><p class="muted">Only the job roles returned by the student-specific Test Zone AI analysis are shown here. Each role includes its own pros, cons, market, demand, future, education, courses and entry path.</p></div>`+rolesBlock(an,true)+
    (fin?'':nextBar('Finish your journey','Mark this step complete to unlock the family connection summary and the final scorecard.','markdone','Finish & see family connection →','data-p="options"'));
 }
 
@@ -1578,7 +1673,6 @@ function scoreView(){
   const{an,html}=scoreBlock(s);
   const stg=STAGES[s.stage];
   return bar+`<div class="card"><h2>${esc(s.profile.fullName)} — Scorecard &amp; Analysis</h2><p class="muted">${stg?stg.t+' · ':''}Combined view of the student’s Test Zone result and the family’s perspective.</p></div>`+staleNote(s)+html+anchorCareerBlock(s,an)+
-   `<div class="card"><h2>Suitable careers</h2><p class="muted small">Open each role for alternatives, pros, cons and market value.</p></div>`+rolesBlock(an,false)+
    `<div class="card"><h2>Family perspective</h2>${fOk.map(([id,f])=>`<div class="qa"><div class="row sp"><b>${esc(f.profile.fullName)} <span class="muted small">(${esc(f.profile.relation)})</span></b><span class="fit ${f.status==='supportive'?'s':'p'}">${f.status==='supportive'?'Supportive':'Unsatisfied'} · ${f.rating}/10</span></div>
      ${f.status==='supportive'?'<p class="muted">The family has recorded support. Generic support is not treated as proof for any specific career.</p>':f.qa.filter(x=>x.accepted).map(x=>`<div class="qa"><b>${esc(x.q)}</b><p style="margin:4px 0">“${esc(x.a)}”</p><div class="note info small">${x.ai&&x.ai.evidence?esc(x.ai.evidence):esc(concernNote(x.a,an))}${x.ai&&x.ai.dimensions&&x.ai.dimensions.length?`<br><span class="muted">Topics detected: ${esc(x.ai.dimensions.join(' · '))}</span>`:''}</div></div>`).join('')}</div>`).join('')}</div>`+familyIntersectionBlock(s,an,fOk);
 }
@@ -1791,15 +1885,16 @@ function localTestAnalysis(tally,reasoning,v){
   const strengths=order.filter(k=>(tally[k]||0)>0).slice(0,3).map(k=>labels[k]);
   const interests=[...arr(v.interests),...arr(v.hobbies),...arr(v.likings),...subjNames(v)].filter(Boolean).slice(0,6);
   const traits=order.filter(k=>(tally[k]||0)>0).slice(0,5).map(k=>({R:'Practical',I:'Analytical',A:'Creative',S:'Supportive',E:'Enterprising',C:'Organised'}[k]));
-  const roles=roleNames(v).slice(0,3);
   return{
-    summary:`You show a ${strengths.slice(0,2).join(' and ')} orientation, with your answers suggesting that you learn best through your interests and preferred ways of solving problems. Your profile also shows ${reasoning>0?'some strength in reasoning and structured thinking':'a clear preference for exploring ideas through your own interests and choices'}.`,
-    coreInterests:interests.length?interests:['Problem solving','Learning','Career exploration'],
-    traits:traits.length?traits:['Curious','Independent'],
-    careerInclination:roles.length?`You currently lean towards ${roles.join(', ')} because these roles connect with your stated interests, subjects and preferences.`:`You currently lean towards careers that match your strongest interests, subjects and preferred working style.`
+    summary:`Your Test Zone shows ${strengths.slice(0,2).join(' and ')||'a mixed pattern'}, but the personalised career-role analysis could not be verified right now. CareerMitra will not guess job roles from generic Holland mappings.`,
+    personalityType:'Test Zone pattern — career analysis unavailable',
+    coreInterests:interests,
+    traits,
+    careerDirections:[],
+    rankedCareers:[],
+    careerInclination:'Career roles will appear only after the AI has produced a complete evidence-based analysis of your actual Test Zone responses.'
   };
 }
-
 async function finishTest(){
   const s=stu(),{q,a}=S.tq,tally={R:0,I:0,A:0,S:0,E:0,C:0};let reasoning=0;
   const responses=q.map((qq,i)=>{
@@ -1809,7 +1904,7 @@ async function finishTest(){
   });
   S.tstate='analysing';render();
   const v=s.vault;
-  const analysisPrompt=`You are CareerMitra’s neutral, humble and careful career-analysis AI. You are NOT a recruiter, marketer, parent or career seller.
+  const analysisPrompt=`You are CareerMitra’s neutral, humble and careful career-analysis AI for Test Zone responses. You are NOT a recruiter, marketer, parent or career seller.
 
 Your task is to understand this student from the evidence they actually gave. Do not push them toward any career.
 
@@ -1839,19 +1934,31 @@ ANALYSIS TASK
 1. Give a short, gentle summary of the observed pattern.
 2. List core interests only when they are supported by repeated Vault/test evidence.
 3. Give a few neutral traits that describe observed behaviour, not labels of worth.
-4. Give up to 5 career directions. Rank them only by how well the student’s own evidence fits. Do NOT fill all 5 if evidence is weak.
+4. Give 3–5 concrete job roles when the supplied evidence supports them. Rank them only by how well the student’s own evidence fits. If evidence is genuinely insufficient, return fewer than 3 rather than inventing roles.
+4A. Every returned job role must be a real occupational role, not a Holland category such as “analytical careers” or “technical careers”.
+4B. At least 2 evidence points for each role must explicitly trace to the student’s actual Vault/test responses. Do not use the role name itself as evidence.
 5. For every career direction give: exact name, fit Strong/Moderate/Possible, 2–5 evidence points tied to the student’s actual responses, possible watchouts or missing evidence, and a short reason.
-6. Include careerDirections such as broad work styles only when supported by the evidence.
-7. If the student’s answers are genuinely mixed, say “mixed evidence” rather than forcing a clean personality story.
+6. For EVERY ranked career, also create a complete job profile inside the profile object. The profile must describe that exact occupational role and must never be a generic template copied across roles. The profile must be specific to that exact career, not a generic template.
+7. The profile MUST contain: summary, pros, cons, market, demand, pay, future, education, vocational, courses, path, skills, alternatives and caution.
+8. Pros/cons/demand/market/future must be career-specific. Do not copy the same text across careers.
+9. Education and path must match the exact role. Never say a generic “relevant bachelor’s degree” when the role has a known specific route. If the route is uncertain, explicitly say that it needs verification instead of guessing.
+10. Courses means useful learning subjects/courses/certifications, not random certificate collecting. Give only options that genuinely support the role.
+11. Market, demand, pay and future are dynamic. Do NOT invent precise salary figures, job counts, percentages, employer names or guaranteed outcomes. If current evidence is unavailable, say “needs live verification” in the profile caution.
+12. Zero false personalization: every reason for why the student fits must trace to their Vault or actual test responses. Never invent a project, skill, mark, qualification, interest or experience.
+13. A career must not appear only because it is prestigious, popular, high-paying or present in the static app database.
+14. Return fewer careers if the evidence is weak. Do not fill the list.
+15. Include careerDirections such as broad work styles only when supported by the evidence.
+16. If the student’s answers are genuinely mixed, say “mixed evidence” rather than forcing a clean personality story.
 
 RETURN ONLY JSON:
-{"summary":"2-4 simple sentences","personalityType":"short neutral description","coreInterests":["..."],"traits":["..."],"careerDirections":["..."],"rankedCareers":[{"name":"career direction","fit":"Strong|Moderate|Possible","score":0.0,"evidence":["..."],"watchouts":["..."],"tradeoffs":["..."],"reason":"...","path":["..."],"alternatives":["..."]}],"careerInclination":"1-2 gentle sentences"}`;
+{"summary":"2-4 simple sentences","personalityType":"short neutral description","coreInterests":["..."],"traits":["..."],"careerDirections":["..."],"rankedCareers":[{"name":"career direction","fit":"Strong|Moderate|Possible","score":0.0,"evidence":["..."],"watchouts":["..."],"tradeoffs":["..."],"reason":"...","path":["..."],"alternatives":["..."],"profile":{"summary":"exact-role summary","pros":["..."],"cons":["..."],"market":"...","demand":"...","pay":"...","future":"...","education":"exact education route","vocational":"exact vocational/diploma route or clearly unavailable","courses":["..."],"path":["step 1...","step 2...","step 3..."],"skills":["..."],"alternatives":["..."],"caution":"what still needs verification"}}],"careerInclination":"1-2 gentle sentences"}`;
 
   let r=await aiJson(analysisPrompt);
-  let usedAI=!!(r&&typeof r.summary==='string'&&Array.isArray(r.rankedCareers)&&Array.isArray(r.traits)&&Array.isArray(r.coreInterests));
+  const validCareerAnalysis=x=>!!(x&&typeof x.summary==='string'&&Array.isArray(x.rankedCareers)&&x.rankedCareers.length>0&&Array.isArray(x.traits)&&Array.isArray(x.coreInterests)&&x.rankedCareers.every(c=>c&&typeof c.name==='string'&&c.name.trim()&&c.profile&&typeof c.profile==='object'));
+  let usedAI=validCareerAnalysis(r);
   if(!usedAI && !/429|rate limit|rate_limit|quota/i.test(window.CM_AI_ERROR||'')){
     r=await aiJson(analysisPrompt+`\n\nRECOVERY PASS: Re-read every supplied response. Return a complete valid JSON analysis. Do not invent a career preference and do not omit rankedCareers if there is enough evidence. If evidence is insufficient, return fewer careers. JSON only.`,{bypassCache:true});
-    usedAI=!!(r&&typeof r.summary==='string'&&Array.isArray(r.rankedCareers)&&Array.isArray(r.traits)&&Array.isArray(r.coreInterests));
+    usedAI=validCareerAnalysis(r);
   }
   if(!usedAI){
     r=localTestAnalysis(tally,reasoning,v);
@@ -1860,7 +1967,7 @@ RETURN ONLY JSON:
   const aiPayload={
     summary:String(r.summary||''),coreInterests:arr(r.coreInterests).slice(0,6).map(String),traits:arr(r.traits).slice(0,8).map(String),
     careerInclination:String(r.careerInclination||''),personalityType:String(r.personalityType||''),
-    careerDirections:arr(r.careerDirections).slice(0,6).map(String),rankedCareers:arr(r.rankedCareers).slice(0,8).map(x=>({name:String(x&&x.name||''),fit:String(x&&x.fit||'Possible'),score:typeof x?.score==='number'?x.score:null,evidence:arr(x&&x.evidence).slice(0,5).map(String),watchouts:arr(x&&x.watchouts).slice(0,5).map(String),tradeoffs:arr(x&&x.tradeoffs).slice(0,5).map(String),reason:String(x&&x.reason||''),path:arr(x&&x.path).slice(0,6).map(String),alternatives:arr(x&&x.alternatives).slice(0,6).map(String)})).filter(x=>x.name)
+    careerDirections:arr(r.careerDirections).slice(0,6).map(String),rankedCareers:arr(r.rankedCareers).slice(0,8).map(x=>{const p=(x&&x.profile&&typeof x.profile==='object')?x.profile:{};return{name:String(x&&x.name||''),fit:String(x&&x.fit||'Possible'),score:typeof x?.score==='number'?x.score:null,evidence:arr(x&&x.evidence).slice(0,5).map(String),watchouts:arr(x&&x.watchouts).slice(0,5).map(String),tradeoffs:arr(x&&x.tradeoffs).slice(0,5).map(String),reason:String(x&&x.reason||''),path:arr(x&&x.path).slice(0,6).map(String),alternatives:arr(x&&x.alternatives).slice(0,6).map(String),profile:{summary:String(p.summary||''),pros:arr(p.pros).slice(0,5).map(String),cons:arr(p.cons).slice(0,5).map(String),market:String(p.market||''),demand:String(p.demand||''),pay:String(p.pay||''),future:String(p.future||''),education:String(p.education||''),vocational:String(p.vocational||''),courses:arr(p.courses).slice(0,8).map(String),path:arr(p.path).slice(0,8).map(String),skills:arr(p.skills).slice(0,10).map(String),alternatives:arr(p.alternatives).slice(0,8).map(String),caution:String(p.caution||'')}}}).filter(x=>x.name)
   };
   s.test={tally,reasoning,takenAt:Date.now(),aiSource:usedAI?'ai':'builtin',rev:v.rev,ai:aiPayload,responses};
   s.progress.score=false;s.progress.options=false;delete s.testDraft;
