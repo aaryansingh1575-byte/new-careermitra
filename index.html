@@ -1877,73 +1877,200 @@ async function finishTest(){
   });
   S.tstate='analysing';render();
   const v=s.vault;
-  const analysisPrompt=`You are CareerMitra’s neutral, humble and careful career-analysis AI for Test Zone responses. You are NOT a recruiter, marketer, parent or career seller.
+  const studentEvidence=JSON.stringify({
+    stage:s.stage,
+    vault:{
+      interests:v.interests,hobbies:v.hobbies,likings:v.likings,
+      strongSubjects:subjNames(v),verifiedSkills:skillNames(v),
+      preferredRoles:roleNames(v),nonNegotiable:v.nonnegotiable,
+      field:v.field,whyField:v.whyField,whyNotOthers:v.whyNotOthers,
+      alternatives:v.alternatives
+    },
+    testResponses:responses,
+    hollandTally:tally,
+    reasoningCorrect:reasoning
+  });
 
-Your task is to understand this student from the evidence they actually gave. Do not push them toward any career.
+  /*
+   * IMPORTANT: Career analysis is deliberately split into two small AI passes.
+   * The old single request asked for 6–10 roles AND a huge profile for every role
+   * in one JSON response. With the backend's current token limit that can be
+   * truncated, leaving only one role or an incomplete profile. The Test Zone
+   * itself is untouched; this only makes the post-test analysis reliable.
+   */
+  const roleDiscoveryPrompt=`You are CareerMitra's neutral career-analysis AI for a student's completed Test Zone.
 
-NON-NEGOTIABLE RULES
-- Use ONLY the supplied Personal Vault and the student’s actual Test Zone responses.
-- Do not use popularity, prestige, salary, social status, government/private preference, gender stereotypes, region stereotypes or your own idea of a “good career”.
-- The student’s non-negotiable career and preferred roles are evidence of preference, not proof of aptitude or the correct answer.
-- Do not let a named career dominate the result merely because it appears in the Vault.
-- Do not infer personality from a factual question being answered correctly. Use factual questions only for the reasoning/knowledge part.
-- Look for patterns across multiple responses. One answer should rarely decide a conclusion.
-- Separate what the student clearly showed from what is uncertain.
-- If the evidence is weak or mixed, say so. Do not manufacture confidence.
-- Career suggestions must come from the student’s evidence, not from a fixed “best careers” list. You may return a career not present in the app’s structured database.
-- Be neutral, respectful, soft-spoken and easy to understand. Never say the student “should” choose a career.
+Understand the student from ONLY their Personal Vault and their actual selected Test Zone answers.
+Do not sell, promote or force a career.
 
-PERSONAL VAULT:
-${JSON.stringify({stage:s.stage,interests:v.interests,hobbies:v.hobbies,likings:v.likings,strongSubjects:subjNames(v),verifiedSkills:skillNames(v),preferredRoles:roleNames(v),nonNegotiable:v.nonnegotiable,field:v.field,whyField:v.whyField,whyNotOthers:v.whyNotOthers,alternatives:v.alternatives})}
+STUDENT EVIDENCE:
+${studentEvidence}
 
-TEST RESPONSES (the chosen option text is the important evidence):
-${JSON.stringify(responses)}
+TASK:
+Identify the student's genuine occupational directions from the combined evidence.
+Analyse personality pattern, interests, hobbies, likings, strong subjects, verified skills,
+preferred roles, chosen field, reasons, alternatives AND the actual Test Zone responses together.
 
-TECHNICAL TALLY (secondary context only; do not let it override the actual responses):
-${JSON.stringify(tally)}
-Reasoning questions correct: ${reasoning}
-
-ANALYSIS TASK
-1. Give a short, gentle summary of the observed pattern.
-2. List core interests only when they are supported by repeated Vault/test evidence.
-3. Give a few neutral traits that describe observed behaviour, not labels of worth.
-4. Give 6–10 concrete job roles when the supplied evidence supports them. Analyse the student’s personality pattern, interests, hobbies, likings, strong subjects, skills, preferred roles and actual Test Zone responses together. Cover different genuine occupational directions that emerge from the evidence rather than returning only the student’s named/non-negotiable career. Rank them only by how well the student’s own evidence fits. If evidence is genuinely insufficient for a role, do not invent it.
-4A. Every returned job role must be a real occupational role, not a Holland category such as “analytical careers” or “technical careers”.
-4B. At least 2 evidence points for each role must explicitly trace to the student’s actual Vault/test responses. Do not use the role name itself as evidence.
-4C. Try to cover multiple distinct occupational families when supported by the same evidence: direct-fit roles, adjacent roles, specialist roles and practical alternatives. Do not duplicate essentially identical roles just to increase the count.
-5. For every career direction give: exact name, fit Strong/Moderate/Possible, 2–5 evidence points tied to the student’s actual responses, possible watchouts or missing evidence, and a short reason.
-6. For EVERY ranked career, also create a complete job profile inside the profile object. The profile must describe that exact occupational role and must never be a generic template copied across roles. The profile must be specific to that exact career, not a generic template.
-7. The profile MUST contain: summary, pros, cons, market, demand, pay, future, education, vocational, courses, path, skills, alternatives and caution.
-8. Pros/cons/demand/market/future must be career-specific. Do not copy the same text across careers.
-9. Education and path must match the exact role. Never say a generic “relevant bachelor’s degree” when the role has a known specific route. If the route is uncertain, explicitly say that it needs verification instead of guessing.
-10. Courses means useful learning subjects/courses/certifications, not random certificate collecting. Give only options that genuinely support the role.
-11. Market, demand, pay and future are dynamic. Do NOT invent precise salary figures, job counts, percentages, employer names or guaranteed outcomes. If current evidence is unavailable, say “needs live verification” in the profile caution.
-12. Zero false personalization: every reason for why the student fits must trace to their Vault or actual test responses. Never invent a project, skill, mark, qualification, interest or experience.
-13. A career must not appear only because it is prestigious, popular, high-paying or present in the static app database.
-14. Return fewer careers if the evidence is weak. Do not fill the list.
-15. Include careerDirections such as broad work styles only when supported by the evidence.
-16. If the student’s answers are genuinely mixed, say “mixed evidence” rather than forcing a clean personality story.
+RULES:
+- The non-negotiable career is a preference signal, NOT proof and must not dominate the result.
+- Do not use a fixed popular-career list.
+- Do not invent qualifications, projects, marks, skills or experience.
+- Use repeated evidence and combinations of evidence, not one answer.
+- A factual question can show reasoning/knowledge only; do not infer personality from correctness.
+- Return REAL occupational job roles, never categories like "analytical careers".
+- Explore different genuine occupational families when supported: direct-fit roles, adjacent roles,
+specialist roles and practical alternatives. Do not duplicate the same occupation with different names.
+- A role may be supported by a combination of several evidence types even when the exact role name
+was never written by the student. Explain the evidence explicitly.
+- Prefer 6–8 distinct roles when the evidence reasonably supports them. Do not stop at the
+non-negotiable career merely because it is explicitly named.
+- If a role is weak, omit it rather than inventing evidence.
 
 RETURN ONLY JSON:
-{"summary":"2-4 simple sentences","personalityType":"short neutral description","coreInterests":["..."],"traits":["..."],"careerDirections":["..."],"rankedCareers":[{"name":"career direction","fit":"Strong|Moderate|Possible","score":0.0,"evidence":["..."],"watchouts":["..."],"tradeoffs":["..."],"reason":"...","path":["..."],"alternatives":["..."],"profile":{"summary":"exact-role summary","pros":["..."],"cons":["..."],"market":"...","demand":"...","pay":"...","future":"...","education":"exact education route","vocational":"exact vocational/diploma route or clearly unavailable","courses":["..."],"path":["step 1...","step 2...","step 3..."],"skills":["..."],"alternatives":["..."],"caution":"what still needs verification"}}],"careerInclination":"1-2 gentle sentences"}`;
+{
+ "summary":"2-4 simple sentences",
+ "personalityType":"short neutral description",
+ "coreInterests":["..."],
+ "traits":["..."],
+ "careerDirections":["..."],
+ "rankedCareers":[
+   {
+    "name":"exact occupational role",
+    "fit":"Strong|Moderate|Possible",
+    "score":0.0,
+    "evidence":["2-5 exact evidence points from Vault/Test responses"],
+    "watchouts":["missing evidence or genuine limitation"],
+    "tradeoffs":["role-specific trade-off"],
+    "reason":"short evidence-based reason",
+    "alternatives":["2-4 related roles"]
+   }
+ ],
+ "careerInclination":"1-2 gentle sentences"
+}`;
 
-  let r=await aiJson(analysisPrompt);
-  const validCareerAnalysis=x=>!!(x&&typeof x.summary==='string'&&Array.isArray(x.rankedCareers)&&x.rankedCareers.length>0&&Array.isArray(x.traits)&&Array.isArray(x.coreInterests)&&x.rankedCareers.every(c=>c&&typeof c.name==='string'&&c.name.trim()&&c.profile&&typeof c.profile==='object'));
-  let usedAI=validCareerAnalysis(r);
-  if(!usedAI && !/429|rate limit|rate_limit|quota/i.test(window.CM_AI_ERROR||'')){
-    r=await aiJson(analysisPrompt+`\n\nRECOVERY PASS: Re-read every supplied response. Return a complete valid JSON analysis. Do not invent a career preference and do not omit rankedCareers if there is enough evidence. If evidence is insufficient, return fewer careers. JSON only.`,{bypassCache:true});
-    usedAI=validCareerAnalysis(r);
+  let discovery=await aiJson(roleDiscoveryPrompt,{bypassCache:true});
+  const validDiscovery=x=>!!(
+    x&&typeof x.summary==='string'&&Array.isArray(x.rankedCareers)&&
+    x.rankedCareers.length>0&&Array.isArray(x.traits)&&Array.isArray(x.coreInterests)&&
+    x.rankedCareers.every(c=>c&&typeof c.name==='string'&&c.name.trim()&&Array.isArray(c.evidence)&&c.evidence.length>=2)
+  );
+
+  if(!validDiscovery(discovery) && !/429|rate limit|rate_limit|quota/i.test(window.CM_AI_ERROR||'')){
+    discovery=await aiJson(roleDiscoveryPrompt+`\n\nRECOVERY PASS:\nRe-read ALL supplied Vault and Test responses. Produce the complete ranked job-role list again. Prefer 6–8 genuinely defensible occupational roles across distinct directions when supported. JSON only.`,{bypassCache:true});
   }
+
+  let usedAI=validDiscovery(discovery);
+  let finalAnalysis=discovery;
+
+  if(usedAI){
+    const discoveredRoles=arr(discovery.rankedCareers).slice(0,8).map(c=>({
+      name:String(c.name||''),fit:String(c.fit||'Possible'),score:typeof c.score==='number'?c.score:null,
+      evidence:arr(c.evidence).slice(0,5),watchouts:arr(c.watchouts).slice(0,5),
+      tradeoffs:arr(c.tradeoffs).slice(0,5),reason:String(c.reason||''),alternatives:arr(c.alternatives).slice(0,5)
+    }));
+
+    const profilePrompt=`You are CareerMitra's senior Indian career-profile analyst.
+
+Create a COMPLETE, career-specific job profile for EVERY role in the supplied role list.
+Do not change, merge or remove the roles. Do not create new roles.
+
+STUDENT EVIDENCE:
+${studentEvidence}
+
+DISCOVERED ROLES:
+${JSON.stringify(discoveredRoles)}
+
+For EACH exact role provide information specific to that occupation in India.
+Do not copy the same generic text across roles.
+Do not invent precise salary numbers, job counts or guaranteed outcomes. If current figures are uncertain,
+say that live verification is required.
+Education must be the actual route for that occupation when known. Courses means useful learning subjects,
+certifications or preparation — not random certificates.
+
+RETURN ONLY JSON:
+{
+ "profiles":[
+  {
+   "name":"exact role name from the supplied list",
+   "profile":{
+    "summary":"what this exact professional does",
+    "pros":["3-5 role-specific advantages"],
+    "cons":["3-5 role-specific drawbacks"],
+    "market":"India market context",
+    "demand":"current demand/hiring context, with uncertainty where needed",
+    "pay":"realistic earning pattern without fabricated precise figures",
+    "future":"growth, technology changes and risks",
+    "education":"exact academic route",
+    "vocational":"exact diploma/vocational route or clearly unavailable",
+    "courses":["useful role-specific subjects/courses/certifications"],
+    "path":["step 1...","step 2...","step 3...","step 4..."],
+    "skills":["job-ready skills"],
+    "alternatives":["related alternatives"],
+    "caution":"what must be verified before choosing this role"
+   }
+  }
+ ]
+}`;
+
+    let profiles=await aiJson(profilePrompt,{bypassCache:true});
+    const validProfiles=x=>!!(x&&Array.isArray(x.profiles)&&x.profiles.length>0&&
+      x.profiles.every(z=>z&&typeof z.name==='string'&&z.name.trim()&&z.profile&&typeof z.profile==='object'));
+
+    if(!validProfiles(profiles) && !/429|rate limit|rate_limit|quota/i.test(window.CM_AI_ERROR||'')){
+      profiles=await aiJson(profilePrompt+`\n\nRECOVERY PASS:\nReturn one complete profile for every supplied role, using concise but specific information. Do not omit roles. JSON only.`,{bypassCache:true});
+    }
+
+    const profileMap={};
+    if(validProfiles(profiles)){
+      profiles.profiles.forEach(z=>{profileMap[String(z.name).trim().toLowerCase()]=z.profile});
+    }
+
+    const merged=discoveredRoles.map(c=>{
+      const p=profileMap[c.name.trim().toLowerCase()]||{};
+      return {...c,profile:{
+        summary:String(p.summary||''),pros:arr(p.pros).slice(0,5).map(String),cons:arr(p.cons).slice(0,5).map(String),
+        market:String(p.market||''),demand:String(p.demand||''),pay:String(p.pay||''),future:String(p.future||''),
+        education:String(p.education||''),vocational:String(p.vocational||''),courses:arr(p.courses).slice(0,8).map(String),
+        path:arr(p.path).slice(0,8).map(String),skills:arr(p.skills).slice(0,10).map(String),
+        alternatives:arr(p.alternatives).slice(0,8).map(String),caution:String(p.caution||'')
+      }};
+    });
+
+    /* Keep the roles even if one profile call is temporarily incomplete; never
+       replace them with static careers. Missing profile fields are rendered as
+       verification-needed rather than fabricated content. */
+    finalAnalysis={...discovery,rankedCareers:merged};
+  }
+
   if(!usedAI){
-    r=localTestAnalysis(tally,reasoning,v);
-    usedAI=false;
+    finalAnalysis=localTestAnalysis(tally,reasoning,v);
   }
+
   const aiPayload={
-    summary:String(r.summary||''),coreInterests:arr(r.coreInterests).slice(0,6).map(String),traits:arr(r.traits).slice(0,8).map(String),
-    careerInclination:String(r.careerInclination||''),personalityType:String(r.personalityType||''),
-    careerDirections:arr(r.careerDirections).slice(0,6).map(String),rankedCareers:arr(r.rankedCareers).slice(0,8).map(x=>{const p=(x&&x.profile&&typeof x.profile==='object')?x.profile:{};return{name:String(x&&x.name||''),fit:String(x&&x.fit||'Possible'),score:typeof x?.score==='number'?x.score:null,evidence:arr(x&&x.evidence).slice(0,5).map(String),watchouts:arr(x&&x.watchouts).slice(0,5).map(String),tradeoffs:arr(x&&x.tradeoffs).slice(0,5).map(String),reason:String(x&&x.reason||''),path:arr(x&&x.path).slice(0,6).map(String),alternatives:arr(x&&x.alternatives).slice(0,6).map(String),profile:{summary:String(p.summary||''),pros:arr(p.pros).slice(0,5).map(String),cons:arr(p.cons).slice(0,5).map(String),market:String(p.market||''),demand:String(p.demand||''),pay:String(p.pay||''),future:String(p.future||''),education:String(p.education||''),vocational:String(p.vocational||''),courses:arr(p.courses).slice(0,8).map(String),path:arr(p.path).slice(0,8).map(String),skills:arr(p.skills).slice(0,10).map(String),alternatives:arr(p.alternatives).slice(0,8).map(String),caution:String(p.caution||'')}}}).filter(x=>x.name)
+    summary:String(finalAnalysis.summary||''),
+    coreInterests:arr(finalAnalysis.coreInterests).slice(0,8).map(String),
+    traits:arr(finalAnalysis.traits).slice(0,10).map(String),
+    careerInclination:String(finalAnalysis.careerInclination||''),
+    personalityType:String(finalAnalysis.personalityType||''),
+    careerDirections:arr(finalAnalysis.careerDirections).slice(0,8).map(String),
+    rankedCareers:arr(finalAnalysis.rankedCareers).slice(0,8).map(x=>{
+      const p=(x&&x.profile&&typeof x.profile==='object')?x.profile:{};
+      return {
+        name:String(x&&x.name||''),fit:String(x&&x.fit||'Possible'),score:typeof x?.score==='number'?x.score:null,
+        evidence:arr(x&&x.evidence).slice(0,5).map(String),watchouts:arr(x&&x.watchouts).slice(0,5).map(String),
+        tradeoffs:arr(x&&x.tradeoffs).slice(0,5).map(String),reason:String(x&&x.reason||''),
+        path:arr(x&&x.path).slice(0,8).map(String),alternatives:arr(x&&x.alternatives).slice(0,8).map(String),
+        profile:{summary:String(p.summary||''),pros:arr(p.pros).slice(0,5).map(String),cons:arr(p.cons).slice(0,5).map(String),
+          market:String(p.market||''),demand:String(p.demand||''),pay:String(p.pay||''),future:String(p.future||''),
+          education:String(p.education||''),vocational:String(p.vocational||''),courses:arr(p.courses).slice(0,8).map(String),
+          path:arr(p.path).slice(0,8).map(String),skills:arr(p.skills).slice(0,10).map(String),
+          alternatives:arr(p.alternatives).slice(0,8).map(String),caution:String(p.caution||'')}
+      };
+    }).filter(x=>x.name)
   };
   s.test={tally,reasoning,takenAt:Date.now(),aiSource:usedAI?'ai':'builtin',rev:v.rev,ai:aiPayload,responses};
+  s.commonGroundAI=null;
+  delete s.commonGroundAIPending;
   s.progress.score=false;s.progress.options=false;delete s.testDraft;
   touch(s);save();S.tstate='idle';S.tq=null;S.tab='score';toast('Test complete — here’s your scorecard');render();
 }
