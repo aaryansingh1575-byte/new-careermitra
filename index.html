@@ -1559,70 +1559,43 @@ function familyIntersectionBlock(st,an,fams){
   if(!acceptedConcerns.length)return '';
   const candidates=arr(an.roles).filter(r=>String(r.n||'').trim());
   if(!candidates.length)return `<div class="card"><h2>Common ground</h2><p class="muted">There is not enough student-side career evidence to compare both sides yet.</p></div>`;
-  const aiOrder=arr(st.commonGroundAI&&st.commonGroundAI.picks).map(x=>String(x.career||'').trim()).filter(Boolean);
-  const studentRoleText=([roleNames(st.vault).join(' '),st.vault.nonnegotiable||'',st.vault.field||'',...arr(st.vault.interests),...arr(st.vault.hobbies),...arr(st.vault.likings),...subjNames(st.vault),...skillNames(st.vault)].join(' ')).toLowerCase();
+
+  /* AI common-ground result is the source of truth. Do not rebuild family evidence with keyword heuristics. */
+  const aiPicks=arr(st.commonGroundAI&&st.commonGroundAI.picks)
+    .filter(x=>x&&String(x.career||'').trim()).slice(0,3);
   const norm=x=>String(x||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').trim();
-  const careerText=c=>[c.n,c.mkt,...arr(c.pros),...arr(c.cons),...arr(c.alt),...arr(c.aiTradeoffs),...arr(c.aiAlternatives)].join(' ').toLowerCase();
-  function explicitMatch(answer,c){
-    const a=norm(answer),n=norm(c.n); if(!n)return false;
-    return a.includes(n)||n.includes(a)&&a.length>5;
-  }
-  function concernDimension(q,a){
-    const t=(q+' '+a).toLowerCase();
-    if(/salary|income|earning|money|financial|fee|fees|loan|debt|cost|budget/.test(t))return'finance';
-    if(/security|stable|stability|permanent|job security/.test(t))return'stability';
-    if(/future|scope|demand|growth|10 years|long term/.test(t))return'future';
-    if(/respect|relative|society|community|neighbour|status|prestige/.test(t))return'social';
-    if(/away from home|move|relocat|posting|transfer|city|home/.test(t))return'location';
-    if(/education|degree|college|study|training|course|how long/.test(t))return'education';
-    if(/work life|work-life|hours|stress|pressure|family time|on call/.test(t))return'worklife';
-    if(/competition|exam|selection|success rate/.test(t))return'competition';
-    if(/risk|uncertain|failure|backup|alternative/.test(t))return'risk';
-    return'';
-  }
-  function familyEvidence(c){
-    const matched=[],conflicts=[];
-    acceptedConcerns.forEach(sig=>{
-      const q=sig.q.toLowerCase(),a=sig.a.toLowerCase(),t=q+' '+a,hay=careerText(c);
-      if(explicitMatch(sig.a,c.n)){
-        matched.push({label:'Family explicitly mentioned this career',a:sig.a});
-        return;
-      }
-      // Generic support, “money is no problem”, “whatever he wants”, etc. is context only.
-      if(/whatever|no problem|no issue|dont care|don\.?t care|full support|i support|trust him|trust her|his life|her life|money is no problem|salary is no problem/.test(a))return;
-      const d=concernDimension(q,sig.a); if(!d)return;
-      let pos=false,neg=false,label='';
-      if(d==='finance'){label='financial concern';pos=/salary|pay|earning|income|demand|market/.test(hay);neg=/high cost|expensive|low pay|uncertain income/.test(hay)}
-      if(d==='stability'){label='stability concern';pos=/stable|security|secure|steady|government|public sector/.test(hay);neg=/uncertain|volatile|unstable|contract|high risk/.test(hay)}
-      if(d==='future'){label='future-scope concern';pos=/demand|growth|growing|future|expanding|opportunit/.test(hay);neg=/declin|shrinking|uncertain future/.test(hay)}
-      if(d==='social'){label='social-respect concern';pos=/respect|prestige|professional|mission/.test(hay);neg=/low respect|stigma/.test(hay)}
-      if(d==='location'){label='location concern';pos=/remote|local|hybrid|flexible/.test(hay);neg=/relocation|transfer|posting|travel|away from home/.test(hay)}
-      if(d==='education'){label='education-path concern';pos=/degree|diploma|certif|training|clear path/.test(hay);neg=/very long|long study|phd|postgraduate/.test(hay)}
-      if(d==='worklife'){label='work-life concern';pos=/flexible|work life|work-life|regular hours/.test(hay);neg=/stress|long hours|on call|pressure/.test(hay)}
-      if(d==='competition'){label='competition concern';pos=/multiple routes|many employers|demand|opportunit/.test(hay);neg=/competitive|high competition|tough exam|low success/.test(hay)}
-      if(d==='risk'){label='career-risk concern';pos=/stable|security|multiple routes|demand|alternative/.test(hay);neg=/uncertain|high risk|variable/.test(hay)}
-      if(pos)matched.push({label,a:sig.a}); if(neg)conflicts.push({label,a:sig.a});
-    });
-    return{matched,conflicts};
-  }
   const byName=name=>candidates.find(c=>norm(c.n)===norm(name));
-  const ordered=(aiOrder.map(byName).filter(Boolean).concat(candidates.filter(c=>!aiOrder.some(n=>norm(n)===norm(c.n))))).slice(0,8);
-  const scored=ordered.map((c,i)=>{const fe=familyEvidence(c);const studentFit=Math.max(0,Math.min(100,Math.round((c.score||0)*100)));const total=(fe.matched.length*18)-(fe.conflicts.length*14)+(c.vaultMatch?10:0);return{c,fe,studentFit,total}});
-  const eligible=scored.filter(x=>x.fe.matched.length>0&&!x.fe.conflicts.length).sort((a,b)=>b.total-a.total);
-  const picks=(aiOrder.length?aiOrder.map(byName).filter(Boolean).map(c=>scored.find(x=>x.c===c)).filter(x=>x&&x.fe.matched.length&&!x.fe.conflicts.length):eligible).slice(0,3);
-  const maxStudent=Math.max(1,...scored.map(x=>x.studentFit));
-  return`<div class="card" style="border-width:2px;border-color:var(--brand)">
-    <div class="row sp"><div><div class="muted small">Family + Student intersection</div><h2 style="margin:3px 0">🎯 ${picks.length?'Evidence-based common ground':'No clear common ground found yet'}</h2></div><span class="pill y">Student evidence + ${acceptedConcerns.length} family answers${aiOrder.length?' · AI cross-checked':''}</span></div>
-    <p class="muted small">Only the student’s own Test Zone/Vault evidence and the family’s actual answers are used. General support statements are not treated as proof for a career. If the evidence does not support an overlap, CareerMitra does not force one.</p>
-    ${picks.length?`<div class="grid2" style="margin-top:12px">${picks.map((x,i)=>{const familyPct=Math.max(1,Math.min(99,50+x.fe.matched.length*15-x.fe.conflicts.length*15));const studentPct=Math.max(1,Math.min(99,x.studentFit/maxStudent*100));return `<div class="qa" style="margin:0"><div class="row sp"><b>${i+1}. ${esc(x.c.n)}</b><span class="fit s">Common ground</span></div>
-      <p class="small"><b>Why it appears for the student:</b> ${esc(x.c.aiReason||x.c.strong.join(' ')||'The AI analysis found a match in the student’s responses.')}</p>
-      ${x.c.strong.length?`<div class="note info small"><b>Student evidence</b><ul style="margin:5px 0 0;padding-left:18px">${x.c.strong.slice(0,5).map(v=>`<li>${esc(v)}</li>`).join('')}</ul></div>`:''}
-      <div class="note info small" style="margin-top:8px"><b>Family evidence</b><ul style="margin:5px 0 0;padding-left:18px">${x.fe.matched.slice(0,6).map(v=>`<li><b>${esc(v.label)}</b> — “${esc(v.a.slice(0,220))}${v.a.length>220?'…':''}”</li>`).join('')}</ul></div>
-      ${x.fe.conflicts.length?`<div class="note bad small" style="margin-top:8px"><b>Trade-offs found</b><ul style="margin:5px 0 0;padding-left:18px">${x.fe.conflicts.slice(0,4).map(v=>`<li>${esc(v.label)} — “${esc(v.a.slice(0,180))}${v.a.length>180?'…':''}”</li>`).join('')}</ul></div>`:''}
-      <div class="pc" style="margin-top:10px"><div class="pros"><h4>Pros</h4>${x.c.pros.length?`<ul>${x.c.pros.map(v=>`<li>${esc(v)}</li>`).join('')}</ul>`:'<p class="muted small">Not available in the structured database yet.</p>'}</div><div class="cons"><h4>Cons / trade-offs</h4>${x.c.cons.length?`<ul>${x.c.cons.map(v=>`<li>${esc(v)}</li>`).join('')}</ul>`:'<p class="muted small">Not available in the structured database yet.</p>'}</div></div>
-      <p class="muted small">The percentages below are evidence indicators, not probability of success or a recommendation.</p><div class="trait"><span>Student evidence</span><div class="bar"><i style="width:${studentPct}%"></i></div><span>${Math.round(studentPct)}%</span></div><div class="trait"><span>Family evidence</span><div class="bar"><i style="width:${familyPct}%"></i></div><span>${familyPct}%</span></div>
-    </div>`}).join('')}</div>`:`<div class="note info" style="margin-top:12px"><b>No career is being forced into the common-ground list.</b><br>The current family answers do not provide clear positive evidence for any of the student’s analysed directions without a meaningful conflict. That is a valid result.</div>`}
-    <p class="muted small" style="margin-bottom:0">This is decision support, not a verdict. The student’s personal choice remains visible separately, and uncertainty or disagreement is kept visible.</p>
+
+  if(!aiPicks.length)return `<div class="card" style="border-width:2px;border-color:var(--brand)">
+    <div class="row sp"><div><div class="muted small">Family + Student intersection</div><h2 style="margin:3px 0">🎯 No verified common ground yet</h2></div><span class="pill y">Student evidence + ${acceptedConcerns.length} family answers</span></div>
+    <p class="muted small">The common-ground AI did not find a career with enough evidence on both sides. CareerMitra does not force a match from generic family support or keyword similarity.</p>
+    <div class="note info"><b>This is a valid result.</b><br>The student's Test Zone career analysis remains visible separately. The family intersection is kept separate so family answers cannot create a false career match.</div>
+  </div>`;
+
+  return `<div class="card" style="border-width:2px;border-color:var(--brand)">
+    <div class="row sp"><div><div class="muted small">Family + Student intersection</div><h2 style="margin:3px 0">🎯 Evidence-based common ground</h2></div><span class="pill y">Student evidence + ${acceptedConcerns.length} family answers · AI cross-checked</span></div>
+    <p class="muted small">Only the student's own Test Zone/Vault evidence and the family's actual answers are used. The AI must provide evidence for both sides. Generic support statements are not treated as proof for a career.</p>
+    <div class="grid2" style="margin-top:12px">${aiPicks.map((pick,i)=>{
+      const c=byName(pick.career);
+      const studentEvidence=arr(pick.studentEvidence).map(String).filter(Boolean).slice(0,6);
+      const familyEvidence=arr(pick.familyEvidence).map(String).filter(Boolean).slice(0,6);
+      const conflicts=arr(pick.conflicts).map(String).filter(Boolean).slice(0,5);
+      const fit=String(pick.fit||'Moderate');
+      const studentPct=Math.min(100,Math.max(1,studentEvidence.length*20));
+      const familyPct=Math.min(100,Math.max(1,familyEvidence.length*20));
+      return `<div class="qa" style="margin:0">
+        <div class="row sp"><b>${i+1}. ${esc(String(pick.career||c?.n||'Career'))}</b><span class="fit ${fit.toLowerCase()==='strong'?'s':'g'}">${esc(fit)} common ground</span></div>
+        <p class="small"><b>Why it appears for the student:</b> ${esc(String(pick.reason||c?.aiReason||'The common-ground AI found evidence of student fit.'))}</p>
+        ${studentEvidence.length?`<div class="note info small"><b>Student evidence</b><ul style="margin:5px 0 0;padding-left:18px">${studentEvidence.map(v=>`<li>${esc(v)}</li>`).join('')}</ul></div>`:''}
+        ${familyEvidence.length?`<div class="note info small" style="margin-top:8px"><b>Family evidence</b><ul style="margin:5px 0 0;padding-left:18px">${familyEvidence.map(v=>`<li>${esc(v)}</li>`).join('')}</ul></div>`:''}
+        ${conflicts.length?`<div class="note bad small" style="margin-top:8px"><b>Trade-offs / conflicts</b><ul style="margin:5px 0 0;padding-left:18px">${conflicts.map(v=>`<li>${esc(v)}</li>`).join('')}</ul></div>`:''}
+        ${c?`<div class="pc" style="margin-top:10px"><div class="pros"><h4>Pros</h4>${c.pros.length?`<ul>${c.pros.map(v=>`<li>${esc(v)}</li>`).join('')}</ul>`:'<p class="muted small">Not available in the student role profile.</p>'}</div><div class="cons"><h4>Cons / trade-offs</h4>${c.cons.length?`<ul>${c.cons.map(v=>`<li>${esc(v)}</li>`).join('')}</ul>`:'<p class="muted small">Not available in the student role profile.</p>'}</div></div>`:''}
+        <p class="muted small">Evidence coverage indicators only — not probability of success.</p>
+        <div class="trait"><span>Student evidence</span><div class="bar"><i style="width:${studentPct}%"></i></div><span>${studentPct}%</span></div>
+        <div class="trait"><span>Family evidence</span><div class="bar"><i style="width:${familyPct}%"></i></div><span>${familyPct}%</span></div>
+      </div>`;
+    }).join('')}</div>
+    <p class="muted small" style="margin-bottom:0">This is decision support, not a verdict. The student's personal choice remains visible separately, and uncertainty or disagreement is kept visible.</p>
   </div>`;
 }
 async function requestCommonGroundAI(){
@@ -1934,9 +1907,10 @@ ANALYSIS TASK
 1. Give a short, gentle summary of the observed pattern.
 2. List core interests only when they are supported by repeated Vault/test evidence.
 3. Give a few neutral traits that describe observed behaviour, not labels of worth.
-4. Give 3–5 concrete job roles when the supplied evidence supports them. Rank them only by how well the student’s own evidence fits. If evidence is genuinely insufficient, return fewer than 3 rather than inventing roles.
+4. Give 6–10 concrete job roles when the supplied evidence supports them. Analyse the student’s personality pattern, interests, hobbies, likings, strong subjects, skills, preferred roles and actual Test Zone responses together. Cover different genuine occupational directions that emerge from the evidence rather than returning only the student’s named/non-negotiable career. Rank them only by how well the student’s own evidence fits. If evidence is genuinely insufficient for a role, do not invent it.
 4A. Every returned job role must be a real occupational role, not a Holland category such as “analytical careers” or “technical careers”.
 4B. At least 2 evidence points for each role must explicitly trace to the student’s actual Vault/test responses. Do not use the role name itself as evidence.
+4C. Try to cover multiple distinct occupational families when supported by the same evidence: direct-fit roles, adjacent roles, specialist roles and practical alternatives. Do not duplicate essentially identical roles just to increase the count.
 5. For every career direction give: exact name, fit Strong/Moderate/Possible, 2–5 evidence points tied to the student’s actual responses, possible watchouts or missing evidence, and a short reason.
 6. For EVERY ranked career, also create a complete job profile inside the profile object. The profile must describe that exact occupational role and must never be a generic template copied across roles. The profile must be specific to that exact career, not a generic template.
 7. The profile MUST contain: summary, pros, cons, market, demand, pay, future, education, vocational, courses, path, skills, alternatives and caution.
