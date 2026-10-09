@@ -2088,9 +2088,18 @@ RETURN ONLY THIS JSON:
       }
     }
 
-    /* Keep the roles even if one profile call is temporarily incomplete; never
-       replace them with static careers. Missing profile fields are rendered as
-       verification-needed rather than fabricated content. */
+    /* Keep every AI-discovered role. Attach the profile returned by the
+       role-profile passes. Never replace missing data with the static CAREERS
+       database. Missing profile fields are rendered as verification-needed. */
+    const merged=discoveredRoles.map(role=>{
+      const profile=profileMap[String(role.name||'').trim().toLowerCase()]||{};
+      return {
+        ...role,
+        profile,
+        path:arr(profile.path).length?arr(profile.path):role.path||[],
+        alternatives:arr(profile.alternatives).length?arr(profile.alternatives):role.alternatives||[]
+      };
+    });
     finalAnalysis={...discovery,rankedCareers:merged};
   }
 
